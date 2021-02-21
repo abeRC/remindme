@@ -2,8 +2,6 @@
 
 # FIXME: don't log everything lol
 # FIXME: allow stuff like "one minute and 30 seconds" (text and text/number representation)
-# FIXME: ctrl-c doesnt work properly; fix the threading
-
 
 import telegram
 from telegram import ChatAction
@@ -14,8 +12,10 @@ from queue import PriorityQueue
 import random, os, time, sys
 from datetime import datetime
 from threading import Thread
+import pickle
 
-token_file = "token.txt" # File containing the API token.
+TOKEN_FILENAME = "token.txt" # File containing the API token.
+QUEUE_FILENAME = "reminder_queue.pkl"
 reminder_queue, bot = None, None
 units = {"s": 1, "sec": 1, "secs": 1, "second": 1, "seconds": 1, "m": 60, "min": 60, "mins": 60,
 "minute": 60, "minutes": 60, "h": 3600, "hour": 3600, "hours": 3600, "d": 86400, "day": 86400, "days": 86400}
@@ -38,7 +38,7 @@ def load_token ():
 
     global tok
     try:
-        with open(token_file, "r") as f:
+        with open(TOKEN_FILENAME, "r") as f:
             tok = f.read().strip()
     except:
         logging.error("Invalid or missing token in token.txt.")
@@ -148,14 +148,20 @@ def notice (update : telegram.update.Update, context : telegram.ext.callbackcont
 def reminder_watch_start ():
     """Prepare to manage and execute reminders."""
 
-    # Initialize queue and bot.
-    global reminder_queue, bot
-    reminder_queue = PriorityQueue()
+    # Initialize bot and queue.
+    global bot, reminder_queue
     bot = telegram.Bot(token=tok)
-    try:
-        Thread(target=reminder_watch).start()
-    except (KeyboardInterrupt, SystemExit):
-        sys.exit(1)
+    reminder_queue = PriorityQueue()
+    if os.path.isfile(QUEUE_FILENAME) and not (os.path.getsize(QUEUE_FILENAME) == 0):
+        logging.info("reminder_watch_start: 'reminder_queue.pkl' exists, so attempting to load queue from it.")
+        with open(QUEUE_FILENAME, "rb") as f:
+            to_add = pickle.load(f)
+        for item in to_add:
+            reminder_queue.put(item)
+    else:
+        logging.info("reminder_watch_start: No previous dump, so the queue starts empty.")
+    
+    Thread(target=reminder_watch, daemon=True).start() # Start as daemon so that it exits together with main thread.
 
 
 def reminder_watch (tries=5):
@@ -165,7 +171,7 @@ def reminder_watch (tries=5):
         while True:
             if not reminder_queue.empty():
                 peek_next = reminder_queue.queue[0]
-                scheduled_time = peek_next[0] # Tiemstamp is the first element of the tuple.
+                scheduled_time = peek_next[0] # Timestamp is the first element of the tuple.
                 if time.time() >= scheduled_time:
                     logging.info("PEEK:") ### DBG
                     logging.info(peek_next) ### DBG
@@ -178,7 +184,9 @@ def reminder_watch (tries=5):
         if tries >= 1:
             reminder_watch(tries=tries-1)
         else:
-            exit(1)
+            save_stuff()
+            logging.error("K1LL EV3RY TH1NGGGGGGGG27256@&4272378&@$*&*32")
+            os._exit(1)
     
 def reminder_message (msg=None, username=None):
     """Generate the message used in the reminder. If the user didn't specify custom text,
@@ -223,5 +231,23 @@ def main ():
     logging.info("BOT IS RUNNING! :D")
     updater.idle() 
 
-main()
-exit(1)
+def save_stuff ():
+    logging.info("save_stuff: Saving stuff...")
+    if not reminder_queue:
+        logging.error("save_stuff: There is no queue to save!")
+    else:
+        if reminder_queue.empty():
+            logging.info("save_stuff: 'reminder_queue' is empty but saving it anyway.")
+        with open(QUEUE_FILENAME, "wb") as f:
+            # NOTE: We can't pickle the queue directly because it's a _thread.lock object!
+            pickle.dump(reminder_queue.queue, f, pickle.HIGHEST_PROTOCOL)
+
+if __name__ == "__main__":
+    try:
+        main()
+        logging.info("exiting cleanly..?")
+        save_stuff()
+    except:
+        logging.error("exiting abruptly with exception in the main program ;;-;;")
+        save_stuff()
+        raise
